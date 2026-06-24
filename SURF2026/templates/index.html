@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Cahn-Hilliard Live Stream</title>
+
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            font-family: Arial, sans-serif;
+            background: #111;
+            color: white;
+            overflow: hidden;
+        }
+
+        #app {
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        #control-bar {
+            height: 64px;
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            padding: 8px 16px;
+            background: #1c1c1c;
+            border-bottom: 1px solid #333;
+            box-sizing: border-box;
+        }
+
+        #control-bar h2 {
+            font-size: 18px;
+            margin: 0 18px 0 0;
+            white-space: nowrap;
+        }
+
+        label {
+            font-size: 13px;
+            color: #ddd;
+        }
+
+        input {
+            width: 70px;
+            padding: 4px 6px;
+            border-radius: 4px;
+            border: 1px solid #555;
+            background: #222;
+            color: white;
+        }
+
+        button {
+            padding: 6px 12px;
+            border: none;
+            border-radius: 4px;
+            background: #4c8bf5;
+            color: white;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #3b73d9;
+        }
+
+        #plot {
+            flex: 1;
+            width: 100%;
+        }
+
+        #time-display {
+            margin-left: auto;
+            font-size: 14px;
+            color: #eee;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="app">
+        <form id="control-bar" method="get">
+            <h2>Cahn-Hilliard Live Stream</h2>
+
+            <label>
+                N
+                <input type="number" min="1" step="1" name="N" value="{{ N }}">
+            </label>
+
+            <label>
+                t max
+                <input type="number" step="0.1" name="t_max" value="{{ t_max }}">
+            </label>
+
+            <label>
+                step
+                <input type="number" step="0.0001" name="step" value="{{ step }}">
+            </label>
+
+            <label>
+                kappa
+                <input type="number" step="0.1" name="kappa" value="{{ kappa }}">
+            </label>
+
+            <button type="submit">Run</button>
+            <button type="button" id="restart-btn">Restart</button>
+            <button type="button" id="stop-btn">Stop</button>
+
+            <span id="time-display">connecting...</span>
+        </form>
+
+        <div id="plot"></div>
+    </div>
+
+    <script>
+        const colors = {{ colors|safe }};
+
+        const params = new URLSearchParams({
+            N: "{{ N }}",
+            t_max: "{{ t_max }}",
+            step: "{{ step }}",
+            kappa: "{{ kappa }}"
+        });
+
+        let source = null;
+        let initialized = false;
+
+        const timeDisplay = document.getElementById("time-display");
+        const restartBtn = document.getElementById("restart-btn");
+        const stopBtn = document.getElementById("stop-btn");
+
+        const layout = {
+            paper_bgcolor: "#111",
+            plot_bgcolor: "#111",
+
+            font: {
+                color: "white"
+            },
+
+            margin: {
+                l: 50,
+                r: 30,
+                t: 55,
+                b: 45
+            },
+
+            title: {
+                text: "Live Overlayed Component Evolution",
+                font: {
+                    size: 22
+                }
+            },
+
+            xaxis: {
+                title: "x",
+                showgrid: false,
+                zeroline: false
+            },
+
+            yaxis: {
+                title: "y",
+                showgrid: false,
+                zeroline: false,
+                scaleanchor: "x"
+            },
+
+            legend: {
+                orientation: "h",
+                x: 0.5,
+                xanchor: "center",
+                y: 1.05
+            }
+        };
+
+        const config = {
+            responsive: true,
+            displayModeBar: true
+        };
+
+        function makeTraces(grid) {
+            return grid.map((component, index) => {
+                const color = colors[index % colors.length];
+                if (index == Number(params.get("N")) - 1){
+                    opaq = 0.65
+                }
+                else{
+                    opaq = 0.65
+                }
+                return {
+                    z: component,
+                    type: "heatmap",
+                    colorscale: [
+                        [0, "rgbd(0,0,0,0)"],
+                        [1, color]
+                    ],
+                    opacity: opaq,
+                    zmin: 0,
+                    zmax: 1,
+                    name: `Component ${index}`,
+                    showscale: false,
+                    hovertemplate:
+                        `Component ${index}<br>` +
+                        "x=%{x}<br>" +
+                        "y=%{y}<br>" +
+                        "concentration=%{z}<extra></extra>"
+                };
+            });
+        }
+
+        function drawFrame(frame) {
+            const traces = makeTraces(frame.grid);
+
+            if (!initialized) {
+                Plotly.newPlot("plot", traces, layout, config);
+                initialized = true;
+            } else {
+                Plotly.react("plot", traces, layout, config);
+            }
+
+            timeDisplay.textContent = `t = ${Number(frame.time).toFixed(3)}`;
+        }
+
+        function startStream() {
+            stopStream();
+
+            initialized = false;
+            timeDisplay.textContent = "connecting...";
+
+            source = new EventSource(`/stream/?${params.toString()}`);
+
+            source.onmessage = function(event) {
+                const frame = JSON.parse(event.data);
+                drawFrame(frame);
+            };
+
+            source.addEventListener("done", function() {
+                timeDisplay.textContent += " | done";
+                stopStream();
+            });
+
+            source.onerror = function() {
+                timeDisplay.textContent = "stream connection closed";
+                stopStream();
+            };
+        }
+
+        function stopStream() {
+            if (source !== null) {
+                source.close();
+                source = null;
+            }
+        }
+
+        restartBtn.addEventListener("click", function() {
+            startStream();
+        });
+
+        stopBtn.addEventListener("click", function() {
+            stopStream();
+            timeDisplay.textContent += " | stopped";
+        });
+
+        window.addEventListener("resize", function() {
+            Plotly.Plots.resize("plot");
+        });
+
+        startStream();
+    </script>
+</body>
+</html>
