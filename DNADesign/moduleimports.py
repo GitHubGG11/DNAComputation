@@ -13,15 +13,17 @@ RNA.cvar.temperature=20
 RNA.cvar.salt=1
 RNA.cvar.dangles=2
 
+linker = 'TATCGATA'
+
 loop = "ATC"
 bp = {"A": "T", "T": "A", "C": "G", "G": "C"}
 
-seq1 = "ATTGA"
-seq2 = "TAACT"[::-1]
+seq1 = "GTATTGA"
+seq2 = "CATAACT"[::-1]
 
 N = len(seq1)
 iterations = 10000
-most = 0
+most = 9999999
 best_seq1, best_seq2 = "", ""
 
 
@@ -75,19 +77,59 @@ for i in range(iterations):
     if random.random() < 0.1:
         new_seq2 = random_sequence(seq2, seq1, N)[0]
 
-    change = random.random() < np.exp(3*min(diff2 - diff1, 0))
+    change = random.random() < np.exp(2*min(diff2 - diff1, 0))
 
     if change:
         seq1, seq2 = new_seq1, new_seq2
-        attachment = dissociation(new_seq1, new_seq2, temp2) > 0.5 and dissociation(new_seq1, new_seq2, temp1) < 1e-3
-        if diff2 > most and attachment:
+        attachment = dissociation(new_seq1, new_seq2, temp2) > 0.8 and dissociation(new_seq1, new_seq2, temp1) < 1e-3
+        if diff2 < most and dissociation(new_seq1, new_seq2, temp2) < 1e-3:
             best_seq1, best_seq2 = new_seq1, new_seq2
-            most = max(most, diff2)
+            most = min(most, diff2)
 
         print(seq1, seq2, most, dissociation(new_seq1, new_seq2, temp2), dissociation(new_seq1, new_seq2, temp1))
 
 print(best_seq1, best_seq2)
 
+strands = ['CATCATCA',
+ 'ATTTATTT',
+ 'CTCTCTCA',
+ 'CTTTCTAA',
+ 'TTCCCTAC',
+ 'TACCTCCT',
+ 'CTACCCAA',
+ 'TAATTTAA',
+ 'CTTCTTCA',
+ 'CACACACT',
+ 'TATTATAT',
+ 'CTAACTAA',
+ 'TTTATTAA',
+ 'CAACAACT',
+ 'AATATATA',
+ 'TCTTACTT',
+ 'TGATGATG',
+ 'AAATAAAT',
+ 'TGAGAGAG',
+ 'TTAGAAAG',
+ 'GTAGGGAA',
+ 'AGGAGGTA',
+ 'TTGGGTAG',
+ 'TTAAATTA',
+ 'TGAAGAAG',
+ 'AGTGTGTG',
+ 'ATATAATA',
+ 'TTAGTTAG',
+ 'TTAATAAA',
+ 'AGTTGTTG',
+ 'TATATATT',
+ 'AAGTAAGA']
+
 
 # print(dissociation(seq1, seq2, 370), RNA.fold_compound("AC" + '&' + "TG", RNA.md()).pf(), RNA.fold_compound("AACC" + '&' + "TTGG"[::-1], RNA.md()).mfe())
 # quit()
+
+# strand 1 = (3' to 5', sorry) AC (loop) CATCATCA (domain from hill climbing) AACA (toehold) T CGCGC (falls apart)
+# strand 1 (5' to 3') = CGCGC (falls apart) T AACA (toehold) CATCATCA (domain from hill climbing) AC (loop) 
+# strand 2 (5' to 3') = GCAAG (falls apart) T AACA (toehold) TCTTACTT (domain from hill climbing) AC (loop)
+
+# still sticks together
+# GGACGGG CCTATCC

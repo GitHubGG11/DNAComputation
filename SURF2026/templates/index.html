@@ -185,7 +185,7 @@
             return grid.map((component, index) => {
                 const color = colors[index % colors.length];
                 if (index == Number(params.get("N")) - 1){
-                    opaq = 0.65
+                    opaq = 0
                 }
                 else{
                     opaq = 0.65
@@ -194,14 +194,14 @@
                     z: component,
                     type: "heatmap",
                     colorscale: [
-                        [0, "rgbd(0,0,0,0)"],
+                        [0, 'rgb(0,0,0)'],
                         [1, color]
                     ],
                     opacity: opaq,
                     zmin: 0,
                     zmax: 1,
                     name: `Component ${index}`,
-                    showscale: false,
+                    showscale: true,
                     hovertemplate:
                         `Component ${index}<br>` +
                         "x=%{x}<br>" +

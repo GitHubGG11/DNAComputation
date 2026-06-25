@@ -5,9 +5,9 @@ from .cahn import simulate_frames
 
 
 COLORS = [
-    "rgb(255,0,255)",
+    "rgb(255,0,0)",
+    "rgb(0,0,255)",
     "rgb(0,255,0)",
-    "rgb(0,120,255)",
     "rgb(255,255,0)",
     "rgb(255,0,255)",
     "rgb(0,255,255)",
@@ -45,7 +45,7 @@ def stream_simulation(request):
             t_max=t_max,
             step=step,
             kappa=kappa,
-            iterate=1,
+            iterate=4,
         ):
             data = json.dumps(frame)
             yield f"data: {data}\n\n"

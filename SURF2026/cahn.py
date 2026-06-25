@@ -133,12 +133,10 @@ def simulate_frames(
     spacing=1.0,
     mobility=None,
     A=4.0,
-    beta=0.6,
-    iterate=1,
+    beta=0.4,
+    iterate=10,
 ):
 
-    time = None
-    grid = None
 
     if N < 2:
         raise ValueError("N must be at least 2: one solute plus one solvent.")
@@ -146,6 +144,7 @@ def simulate_frames(
     n_solutes = N - 1
 
     if mobility is None:
+        print("yay")
         mobility = np.ones(n_solutes)
 
     mobility = np.asarray(mobility)
@@ -156,7 +155,7 @@ def simulate_frames(
     components = np.ones(n_solutes) * beta / n_solutes
 
     solutes = np.array([
-        c * np.ones((cx, cy)) + np.random.normal(0, 0.05, (cx, cy))
+        c * np.ones((cx, cy)) + np.random.normal(0, 0.1, (cx, cy))
         for c in components
     ])
 
@@ -178,11 +177,11 @@ def simulate_frames(
     chi = np.zeros((N, N))
 
     # Example: solute 0 repels solvent.
-    chi[0, 1] = 3
-    chi[1, 0] = 3
+    chi[0, -1] = 4
+    chi[-1, 0] = 4
 
-    # chi[0, 2] = -7
-    # chi[2, 0] = -7
+    chi[1, -1] = 4
+    chi[-1, 1] = 4
 
     # Optional examples:
     # solute 1 repels solvent.
@@ -190,8 +189,8 @@ def simulate_frames(
     # chi[0, 1] = -10
 
     # solute 0 attracts solute 1.
-    # chi[1, 2] = 10
-    # chi[2, 1] = 10
+    chi[0, 1] = 3.5
+    chi[1, 0] = 3.5
 
     kx = 2 * np.pi * np.fft.fftfreq(cx, d=spacing)
     ky = 2 * np.pi * np.fft.fftfreq(cy, d=spacing)
@@ -200,6 +199,9 @@ def simulate_frames(
 
     q2 = qx**2 + qy**2
     q4 = q2**2
+
+    time = 0.0
+    grid = make_display_grid(solutes).tolist()
 
     # Send initial frame.
     yield {
