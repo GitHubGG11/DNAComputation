@@ -37,6 +37,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'SURF2026_test',
 ]
 
 MIDDLEWARE = [
@@ -73,9 +74,13 @@ WSGI_APPLICATION = 'SURF2026.wsgi.application'
 # https://docs.djangoproject.com/en/dev/ref/settings/#databases
 
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+    "default": {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": "sequence_db",
+        "USER": "sequence_user",
+        "PASSWORD": "seq",
+        "HOST": "localhost",
+        "PORT": "5432",
     }
 }
 
