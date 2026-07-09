@@ -27,6 +27,43 @@ class SequenceResult(models.Model):
 
     def __str__(self):
         return f"{self.sequence_label.label}: ({self.seq1}, {self.seq2}) = {self.energy}"
+
+
+class LinkerTemperatureCurve(models.Model):
+    compound = models.TextField()
+    target_structure = models.TextField()
+    validation_temperatures_C = models.JSONField()
+    curve = models.JSONField()
+
+    class Meta:
+        db_table = "linker_temperature_curves"
+
+    def __str__(self):
+        return self.compound
+
+
+class ValidLinkerSequence(models.Model):
+    middle = models.TextField()
+    linker = models.TextField()
+    middle_rc = models.TextField()
+    linker_rc = models.TextField()
+    H = models.FloatField(db_column="H")
+    S = models.FloatField(db_column="S")
+    curve = models.ForeignKey(
+        LinkerTemperatureCurve,
+        on_delete=models.CASCADE,
+        related_name="sequences",
+    )
+
+    class Meta:
+        db_table = "valid_linker_sequences"
+        indexes = [
+            models.Index(fields=["middle"]),
+            models.Index(fields=["linker"]),
+        ]
+
+    def __str__(self):
+        return f"{self.middle}, {self.linker}"
     
 def replace_sequence_results(label, results):
 
