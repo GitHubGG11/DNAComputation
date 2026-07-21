@@ -11,8 +11,8 @@ Nav = 6.02214076e23
 
 R = 1.987204258e-3  # kcal / (mol K)
 
-DELTA_H_STICKY = -27.0       # kcal/mol
-DELTA_S_STICKY = -0.070       # kcal/(mol K)
+DELTA_H_STICKY = -43.9       # kcal/mol
+DELTA_S_STICKY = -0.117       # kcal/(mol K)
 
 WORKSPACE = Path(__file__).resolve().parent
 CSV_FILE_NAME = "binodal_results_betaDeltaG_corrected.csv"
@@ -36,11 +36,11 @@ def load_binodal_data(csv_path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarra
         phi_dense = []
 
         for row in reader:
-            beta.append(float(row["beta_Delta_G"]))
             temperature_K = DELTA_H_STICKY / (
                 R * float(row["beta_Delta_G"]) + DELTA_S_STICKY
             )
             print(temperature_K)
+            beta.append(temperature_K - 273.15)
             phi_dilute.append(float(row["phi_minus"])/(volNs*Nav) * 10**6)
             phi_dense.append(float(row["phi_plus"])/(volNs*Nav)*10**6)
 

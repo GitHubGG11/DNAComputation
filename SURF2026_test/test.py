@@ -1,6 +1,6 @@
 """
 Checked parent-projected binodal for the linker lattice model.
-
+One sticky end for beta G. 
 The plotted control parameter is beta*DeltaG. Internally, K=exp(-beta*DeltaG).
 """
 
@@ -15,15 +15,15 @@ from scipy.special import xlogy
 
 # ---------------------------- User parameters ---------------------------- #
 
-PHI_BAR = 0.01
-RHO_BAR = 0.01
+PHI_BAR = 0.004
+RHO_BAR = 0.006
 
 COORDINATION_Z = 4.0
-Z_STAR = (1.0) / 2.0
+Z_STAR = 1
 
-BETA_DELTA_G_MIN = -9
-BETA_DELTA_G_MAX = -20
-NUMBER_OF_ENERGY_VALUES = 100
+BETA_DELTA_G_MIN = -1
+BETA_DELTA_G_MAX = -15
+NUMBER_OF_ENERGY_VALUES = 10
 
 # Search a broad activity interval. Do not center the search at -2 beta_G:
 # for finite parent linker density, the correct root can be much larger.
@@ -82,7 +82,7 @@ def solve_case2_x_vectorized(
       K(A-x)(1-x)(z phi-1-x)=x(z phi-2x)^2
     with A=z z_star phi^2 and x=d/[N(1-phi)].
     """
-    A = z * z_star * phi * phi
+    A = z * Z_STAR * 1/2 * phi * phi
     zphi = z * phi
     upper = np.minimum.reduce(
         [A, np.ones_like(phi), zphi - 1.0, zphi / 2.0]
@@ -156,7 +156,7 @@ class KData:
 def precompute_K(phi: np.ndarray, K: float, z: float, z_star: float) -> KData:
     c = 1.0 - phi
     a_s = z * phi * c
-    a_d = z * z_star * phi * phi * c
+    a_d = z * Z_STAR * 1/2 * phi * phi * c
     mixing = xlogy(phi, phi) + xlogy(c, c)
 
     x2 = solve_case2_x_vectorized(phi, K, z, z_star)
@@ -167,7 +167,7 @@ def precompute_K(phi: np.ndarray, K: float, z: float, z_star: float) -> KData:
         cc = c[valid2]
         xx = x2[valid2]
         h2_constant[valid2] = mixing[valid2] - cc * (
-            B(z * z_star * p * p, xx)
+            B(z * Z_STAR * 1/2 * p * p, xx)
             + B(z * p - 2.0 * xx, 1.0 - xx)
             + (1.0 + xx) * np.log(K)
         )
