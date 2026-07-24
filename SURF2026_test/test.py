@@ -15,19 +15,19 @@ from scipy.special import xlogy
 
 # ---------------------------- User parameters ---------------------------- #
 
-PHI_BAR = 0.004
-RHO_BAR = 0.006
+PHI_BAR = 0.001
+RHO_BAR = 0.002
 
 COORDINATION_Z = 4.0
 Z_STAR = 1
 
-BETA_DELTA_G_MIN = -1
-BETA_DELTA_G_MAX = -15
+BETA_DELTA_G_MIN = -10
+BETA_DELTA_G_MAX = -20
 NUMBER_OF_ENERGY_VALUES = 10
 
 # Search a broad activity interval. Do not center the search at -2 beta_G:
 # for finite parent linker density, the correct root can be much larger.
-LOG_Y_MIN = -40.0
+LOG_Y_MIN = -100.0
 LOG_Y_MAX = 8.0
 NUMBER_OF_Y_VALUES = 240
 RHO_MATCH_TOLERANCE = 5.0e-4

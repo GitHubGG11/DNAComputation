@@ -1,124 +1,140 @@
+import random
+from concurrent.futures import ProcessPoolExecutor
+from itertools import repeat
+
+import numpy as np
 import ViennaRNA as RNA
-from delta_g_estimator import reverse_complement_dna
+
+from delta_g_estimator import reverse_complement_dna, setup_django
 
 
-linker = 'TATCGATA'
-
-arm1 = 'GCGTCCGACACTGAAC'
-arm2 = 'TGTCAGCCGTGCTATC'
-arm3 = 'ACGGTCTGACCCGAAA'
-arm4 = 'ATGTGGCCTACAGTGA'
-
-arm4c = reverse_complement_dna(arm4)
-arm1c = reverse_complement_dna(arm1)
-arm2c = reverse_complement_dna(arm2)
-arm3c = reverse_complement_dna(arm3)
+arm1 = "GCGTCCGACACTGAAC"
+arm2 = "TGTCAGCCGTGCTATC"
+arm3 = "ACGGTCTGACCCGAAA"
+arm4 = "ATGTGGCCTACAGTGA"
+N = 1000
 
 RNA.params_load_DNA_Mathews2004()
 
 
+def random_nanostar_curve(
+    domainA="ACGTTGCAAGTC",
+    linker="GGTA",
+    middle="GTACT",
+    G="CG",
+    temperatures_C=range(20, 81, 5),
+):
+    """Generate a random nanostar design and fit Delta G = H - T*S.
 
+    Explicit sequence arguments can be supplied to reproduce or evaluate a
+    particular design. Energies, H, and S are all expressed in kcal/mol (with
+    S in kcal/mol/K). The returned row can be passed to
+    ``append_nanostar_rows(row, temperature_curve=curve)``.
+    """
+    bases = "ATCG"
+    domainA = "".join(random.choice(bases) for _ in range(12))
+    linker = "".join(random.choice(bases) for _ in range(4))
+    middle = "".join(random.choice(bases) for _ in range(5))
 
-def nsEnergyDiff(domainA='ACGTTGCAAGTC', linker='GGTA', G='CG', temp=30, middle="GTACT"):
     domainAc = reverse_complement_dna(domainA)
-
-    armL = len(arm1)
-
-    domainL = len(domainA)       # 12
-    bulgeL = len(G)          # 2
-    toeholdL = len(linker)      # 4
-
-    ideal_parts = [
-        "(" * domainL + "(" * armL + ".." + "(" * armL + "." * bulgeL + "(" * domainL + "." * (toeholdL + 1),
-
-        ")" * domainL + ")" * armL + ".." + "(" * armL + "." * bulgeL + "(" * domainL + "." * (toeholdL + 1),
-
-        ")" * domainL + ")" * armL + ".." + "(" * armL + "." * bulgeL + "(" * domainL + "." * (toeholdL + 1),
-
-        ")" * domainL + ")" * armL + ".." + ")" * armL + "." * bulgeL + ")" * domainL + "." * (toeholdL + 1),
-    ]
-
-    ideal_parts_linked = [
-        "(" * domainL
-        + "(" * armL
-        + ".."
-        + "(" * armL
-        + "." * bulgeL
-        + "(" * domainL
-        + "." * (toeholdL + 1),
-
-        ")" * domainL
-        + ")" * armL
-        + ".."
-        + "(" * armL
-        + "." * bulgeL
-        + "(" * domainL
-        + "." * (toeholdL + 1),
-
-        ")" * domainL
-        + ")" * armL
-        + ".."
-        + "(" * armL
-        + "." * bulgeL
-        + "(" * domainL
-        + "." * (toeholdL + 1),
-
-        ")" * domainL
-        + ")" * armL
-        + ".."
-        + ")" * armL
-        + "." * bulgeL
-        + ")" * domainL
-        + "." * (toeholdL + 1),
-    ]
-
-
-    ideal_parts = "".join(ideal_parts)
-    ideal_parts_linked = "".join(ideal_parts_linked)
-
-
-    s1 = domainA + arm4c + "TT" + arm1 + G + domainAc + "T" + linker
-    s2 = domainA + arm1c + "TT" + arm2 + G + domainAc + "T" + linker
-    s3 = domainA + arm2c + "TT" + arm3 + G + domainAc + "T" + linker
-    s4 = domainA + arm3c + "TT" + arm4 + G + domainAc + "T" + linker
-    
     linkerc = reverse_complement_dna(linker)
-
-    strandLock = middle + "T" + linkerc + domainA + reverse_complement_dna(G)
-
     middlec = reverse_complement_dna(middle)
+    arm1c = reverse_complement_dna(arm1)
+    arm2c = reverse_complement_dna(arm2)
+    arm3c = reverse_complement_dna(arm3)
+    arm4c = reverse_complement_dna(arm4)
 
-    strandLockc = middlec + "T" + linkerc + domainA + reverse_complement_dna(G)
+    strands = [
+        domainA + arm4c + "TT" + arm1 + G + domainAc + "T" + linker,
+        domainA + arm1c + "TT" + arm2 + G + domainAc + "T" + linker,
+        domainA + arm2c + "TT" + arm3 + G + domainAc + "T" + linker,
+        domainA + arm3c + "TT" + arm4 + G + domainAc + "T" + linker,
+    ]
+    strand_lock = middle + "T" + linkerc + domainA + reverse_complement_dna(G)
+    strand_lock_c = middlec + "T" + linkerc + domainA + reverse_complement_dna(G)
+    linked_sequence = "&".join(
+        strands + [strand_lock, strand_lock_c] + strands
+    )
+    unlinked_sequence = "&".join(strands + strands)
 
-    md = RNA.md()
-    md.temperature = temp
-    md.salt = 1.0
-    md.dangles = 2
+    arm_length = len(arm1)
+    domain_length = len(domainA)
+    bulge_length = len(G)
+    toehold_length = len(linker)
+    ideal_part = "".join(
+        [
+            "(" * domain_length + "(" * arm_length + ".." + "(" * arm_length
+            + "." * bulge_length + "(" * domain_length + "." * (toehold_length + 1),
+            ")" * domain_length + ")" * arm_length + ".." + "(" * arm_length
+            + "." * bulge_length + "(" * domain_length + "." * (toehold_length + 1),
+            ")" * domain_length + ")" * arm_length + ".." + "(" * arm_length
+            + "." * bulge_length + "(" * domain_length + "." * (toehold_length + 1),
+            ")" * domain_length + ")" * arm_length + ".." + ")" * arm_length
+            + "." * bulge_length + ")" * domain_length + "." * (toehold_length + 1),
+        ]
+    )
 
-    ns = [s1, s2, s3, s4]
+    curve = []
+    for temperature_C in temperatures_C:
+        md = RNA.md()
+        md.temperature = float(temperature_C)
+        md.salt = 1.0
+        md.dangles = 2
 
-    sequence = "&".join(ns + [strandLock, strandLockc] + ns)
-    compound = RNA.fold_compound(sequence, md)
-    structure, mfe = compound.mfe()
+        linked = RNA.fold_compound(linked_sequence, md)
+        structure, linked_mfe = linked.mfe()
+        unlinked = RNA.fold_compound(unlinked_sequence, md)
+        unlinked_energy = unlinked.eval_structure(ideal_part + ideal_part)
+        curve.append(
+            {
+                "temperature_C": float(temperature_C),
+                "structure": structure,
+                "mfe_kcal_per_mol": float(linked_mfe - unlinked_energy),
+            }
+        )
 
-    md = RNA.md()
-    md.temperature = temp
-    md.salt = 1.0
-    md.dangles = 2
+    if len(curve) < 2:
+        raise ValueError("at least two temperatures are required for regression")
+    temperatures_K = np.array(
+        [point["temperature_C"] + 273.15 for point in curve], dtype=float
+    )
+    energies = np.array(
+        [point["mfe_kcal_per_mol"] for point in curve], dtype=float
+    )
+    slope, intercept = np.polyfit(temperatures_K, energies, 1)
 
-    sequence_null = "&".join(ns + ns)
-    compound_null = RNA.fold_compound(sequence_null, md)
-    mfe_null = compound_null.eval_structure(ideal_parts + ideal_parts)
+    row = {
+        "arm1": arm1,
+        "arm2": arm2,
+        "arm3": arm3,
+        "arm4": arm4,
+        "middle": middle,
+        "linker": linker,
+        "A_Domain": domainA,
+        "H": float(intercept),
+        "S": float(-slope),
+    }
+    return row, curve
 
-    print(structure)
-    print("\n")
-    print(ideal_parts_linked)
 
-    RNA.svg_rna_plot(sequence_null.replace("&", ""), compound_null.mfe()[0], "ideal_nanostar.svg")
+if __name__ == "__main__":
+    nanostars = []
+    with ProcessPoolExecutor() as executor:
+        generated = executor.map(
+            random_nanostar_curve,
+            repeat(None, N),
+            repeat(None, N),
+            repeat(None, N),
+            chunksize=1,
+        )
+        for iteration, (nanostar, melting_curve) in enumerate(generated, 1):
+            nanostar["curve"] = melting_curve
+            nanostars.append(nanostar)
+            print(f"\rGenerated {iteration}/{N}", end="", flush=True)
 
-    return mfe - mfe_null
+    setup_django()
+    from SURF2026_test.nanostar_database import append_nanostar_rows, wipe_nanostar_tables
 
-mfe_diff = nsEnergyDiff(temp=0)
-
-print(f"MFE: {mfe_diff:.2f} kcal/mol")
-print("Matches ideal nanostar:")
+    wipe_nanostar_tables()
+    inserted_ids = append_nanostar_rows(nanostars)
+    print(f"\nUploaded {len(inserted_ids)} nanostars")
