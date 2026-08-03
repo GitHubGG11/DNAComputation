@@ -21,7 +21,7 @@ RHO_BAR = 0.002
 COORDINATION_Z = 4.0
 Z_STAR = 1
 
-BETA_DELTA_G_MIN = -10
+BETA_DELTA_G_MIN = -16
 BETA_DELTA_G_MAX = -20
 NUMBER_OF_ENERGY_VALUES = 10
 
@@ -206,6 +206,10 @@ def homogeneous(pre: KData, y: float, K: float):
 
     u = y * K / (1.0 + y)
     q = (y * K * K / (1.0 + y)) / (1.0 + u) ** 2
+    # if y < 1e-8:
+    #     print(u, 'u')
+    #     print(q, (y * K ** 2) / (1.0), y*K)
+
 
     d0 = a_d * q / (1.0 + q)
     s0 = (a_s - 2.0 * d0) * u / (1.0 + u)

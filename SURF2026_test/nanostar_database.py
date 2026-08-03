@@ -15,6 +15,8 @@ from .delta_g_estimator import fit_free_energy_thermodynamics
 
 SEQUENCE_TABLE = "nanostar_sequences"
 CURVE_TABLE = "nanostar_temperature_curves"
+FULL_STRAND_TABLE = "nanostar_full_strands"
+KINETIC_RATE_TABLE = "nanostar_kinetic_rates"
 
 SEQUENCE_FIELDS = (
     "arm1",
@@ -28,9 +30,20 @@ SEQUENCE_FIELDS = (
     "S",
 )
 
+FULL_STRAND_FIELDS = (
+    "full_arm1",
+    "full_arm2",
+    "full_arm3",
+    "full_arm4",
+    "upper_linker",
+    "lower_linker",
+)
+
+KINETIC_RATE_FIELDS = ("k1", "k2", "k3", "k1m", "k2m", "k3m")
+
 
 def create_nanostar_tables():
-    """Create the nanostar and melting-curve tables if they do not exist."""
+    """Create all nanostar data tables if needed."""
     with connection.cursor() as cursor:
         cursor.execute(
             f'''CREATE TABLE IF NOT EXISTS {CURVE_TABLE} (
@@ -50,19 +63,121 @@ def create_nanostar_tables():
                 "A_Domain" TEXT NOT NULL,
                 "H" DOUBLE PRECISION NOT NULL,
                 "S" DOUBLE PRECISION NOT NULL,
+                kmeff DOUBLE PRECISION,
+                keff DOUBLE PRECISION,
                 curve_id BIGINT NOT NULL REFERENCES {CURVE_TABLE}(id)
                     ON DELETE CASCADE
             )'''
+        )
+        cursor.execute(
+            f'''ALTER TABLE {SEQUENCE_TABLE}
+                ADD COLUMN IF NOT EXISTS kmeff DOUBLE PRECISION,
+                ADD COLUMN IF NOT EXISTS keff DOUBLE PRECISION'''
+        )
+        cursor.execute(
+            f'''CREATE TABLE IF NOT EXISTS {FULL_STRAND_TABLE} (
+                id BIGSERIAL PRIMARY KEY,
+                nanostar_id BIGINT NOT NULL UNIQUE
+                    REFERENCES {SEQUENCE_TABLE}(id) ON DELETE CASCADE,
+                full_arm1 TEXT NOT NULL,
+                full_arm2 TEXT NOT NULL,
+                full_arm3 TEXT NOT NULL,
+                full_arm4 TEXT NOT NULL,
+                upper_linker TEXT NOT NULL,
+                lower_linker TEXT NOT NULL
+            )'''
+        )
+        cursor.execute(
+            f'''
+                CREATE OR REPLACE FUNCTION delete_nanostar_for_full_strands()
+                RETURNS TRIGGER
+                LANGUAGE plpgsql
+                AS $$
+                BEGIN
+                    IF pg_trigger_depth() = 1 THEN
+                        DELETE FROM {SEQUENCE_TABLE}
+                        WHERE id = OLD.nanostar_id;
+                    END IF;
+                    RETURN OLD;
+                END;
+                $$;
+            '''
+        )
+        cursor.execute(
+            f'''CREATE TABLE IF NOT EXISTS {KINETIC_RATE_TABLE} (
+                id BIGSERIAL PRIMARY KEY,
+                nanostar_id BIGINT NOT NULL UNIQUE
+                    REFERENCES {SEQUENCE_TABLE}(id) ON DELETE CASCADE,
+                k1 DOUBLE PRECISION,
+                k2 DOUBLE PRECISION,
+                k3 DOUBLE PRECISION,
+                k1m DOUBLE PRECISION,
+                k2m DOUBLE PRECISION,
+                k3m DOUBLE PRECISION
+            )'''
+        )
+        cursor.execute(
+            f'''
+                CREATE OR REPLACE FUNCTION delete_nanostar_for_kinetic_rates()
+                RETURNS TRIGGER
+                LANGUAGE plpgsql
+                AS $$
+                BEGIN
+                    IF pg_trigger_depth() = 1 THEN
+                        DELETE FROM {SEQUENCE_TABLE}
+                        WHERE id = OLD.nanostar_id;
+                    END IF;
+                    RETURN OLD;
+                END;
+                $$;
+            '''
+        )
+        cursor.execute(
+            f'''
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1
+                        FROM pg_trigger
+                        WHERE tgname = 'nanostar_kinetic_rate_delete_sequence'
+                    ) THEN
+                        CREATE TRIGGER nanostar_kinetic_rate_delete_sequence
+                        AFTER DELETE ON {KINETIC_RATE_TABLE}
+                        FOR EACH ROW
+                        EXECUTE FUNCTION delete_nanostar_for_kinetic_rates();
+                    END IF;
+                END;
+                $$;
+            '''
+        )
+        cursor.execute(
+            f'''
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1
+                        FROM pg_trigger
+                        WHERE tgname = 'nanostar_full_strand_delete_sequence'
+                    ) THEN
+                        CREATE TRIGGER nanostar_full_strand_delete_sequence
+                        AFTER DELETE ON {FULL_STRAND_TABLE}
+                        FOR EACH ROW
+                        EXECUTE FUNCTION delete_nanostar_for_full_strands();
+                    END IF;
+                END;
+                $$;
+            '''
         )
 
 
 @transaction.atomic
 def wipe_nanostar_tables():
-    """Delete every nanostar and curve row, restarting both IDs at 1."""
+    """Delete every nanostar data row and restart IDs."""
     create_nanostar_tables()
     with connection.cursor() as cursor:
         cursor.execute(
-            f"TRUNCATE TABLE {SEQUENCE_TABLE}, {CURVE_TABLE} "
+            f"TRUNCATE TABLE {KINETIC_RATE_TABLE}, {FULL_STRAND_TABLE}, "
+            f"{SEQUENCE_TABLE}, {CURVE_TABLE} "
             "RESTART IDENTITY CASCADE"
         )
 
@@ -118,6 +233,7 @@ def append_nanostar_rows(rows, temperature_curve=None):
         inserted_ids = []
         for row in normalised_rows:
             missing = [field for field in SEQUENCE_FIELDS[:7] if field not in row]
+            missing.extend(field for field in FULL_STRAND_FIELDS if field not in row)
             if missing:
                 raise ValueError(f"row is missing required fields: {missing}")
 
@@ -152,15 +268,39 @@ def append_nanostar_rows(rows, temperature_curve=None):
 
             cursor.execute(
                 f'''INSERT INTO {SEQUENCE_TABLE}
-                    (arm1, arm2, arm3, arm4, middle, linker, "A_Domain", "H", "S", curve_id)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    (arm1, arm2, arm3, arm4, middle, linker, "A_Domain",
+                     "H", "S", kmeff, keff, curve_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id''',
                 [
                     row["arm1"], row["arm2"], row["arm3"], row["arm4"],
                     row["middle"], row["linker"], row["A_Domain"],
-                    float(H), float(S), int(curve_id),
+                    float(H), float(S), row.get("kmeff"), row.get("keff"),
+                    int(curve_id),
                 ],
             )
-            inserted_ids.append(cursor.fetchone()[0])
+            nanostar_id = cursor.fetchone()[0]
+            inserted_ids.append(nanostar_id)
+            cursor.execute(
+                f'''INSERT INTO {FULL_STRAND_TABLE}
+                    (nanostar_id, full_arm1, full_arm2, full_arm3, full_arm4,
+                     upper_linker, lower_linker)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)''',
+                [
+                    nanostar_id,
+                    row["full_arm1"], row["full_arm2"],
+                    row["full_arm3"], row["full_arm4"],
+                    row["upper_linker"], row["lower_linker"],
+                ],
+            )
+            cursor.execute(
+                f'''INSERT INTO {KINETIC_RATE_TABLE}
+                    (nanostar_id, k1, k2, k3, k1m, k2m, k3m)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)''',
+                [
+                    nanostar_id,
+                    *(row.get(field) for field in KINETIC_RATE_FIELDS),
+                ],
+            )
 
     return inserted_ids
