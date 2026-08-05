@@ -36,7 +36,7 @@ def random_nanostar_curve(
 
     bases = "ATC"
     domainA = "".join(random.choice(bases) for _ in range(12))
-    linker = "".join(random.choice(bases) for _ in range(4))
+    linker = "".join(random.choice(bases) for _ in range(8))
     middle = "".join(random.choice(bases + "G") for _ in range(15))
 
 
