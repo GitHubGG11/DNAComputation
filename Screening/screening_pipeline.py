@@ -5,9 +5,10 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 from pprint import pformat
-from typing import Any, Iterable
+from typing import Any, Sequence
 
 try:
+    from .extract_ns_arms import DEFAULT_WORKBOOK, get_ns_arms
     from .evaluation import (
         effectiveness_from_screening_result,
         plot_orthogonality_matrix,
@@ -16,6 +17,7 @@ try:
     )
     from .linker_screening import (
         DEFAULT_SALT_M,
+        DEFAULT_BLOCKER_HEAT_C,
         DEFAULT_TEMPERATURE_C,
         DEFAULT_THRESHOLD_KCAL_PER_MOL,
         DEFAULT_TOEHOLD_BINDING_TARGET_KCAL_PER_MOL,
@@ -24,6 +26,7 @@ try:
         screen_linker_toeholds,
     )
 except ImportError:  # Allow ``python Screening/screening_pipeline.py``.
+    from extract_ns_arms import DEFAULT_WORKBOOK, get_ns_arms
     from evaluation import (
         effectiveness_from_screening_result,
         plot_orthogonality_matrix,
@@ -32,6 +35,7 @@ except ImportError:  # Allow ``python Screening/screening_pipeline.py``.
     )
     from linker_screening import (
         DEFAULT_SALT_M,
+        DEFAULT_BLOCKER_HEAT_C,
         DEFAULT_TEMPERATURE_C,
         DEFAULT_THRESHOLD_KCAL_PER_MOL,
         DEFAULT_TOEHOLD_BINDING_TARGET_KCAL_PER_MOL,
@@ -42,7 +46,8 @@ except ImportError:  # Allow ``python Screening/screening_pipeline.py``.
 
 
 def screen_and_evaluate(
-    nanostar_pairs: Iterable[tuple[int, int]] | None = None,
+    nanostar_a_arms: Sequence[str],
+    nanostar_b_arms: Sequence[str],
     *,
     threshold: float = DEFAULT_THRESHOLD_KCAL_PER_MOL,
     binding_target: float = DEFAULT_TOEHOLD_BINDING_TARGET_KCAL_PER_MOL,
@@ -51,21 +56,20 @@ def screen_and_evaluate(
     evaluation_off_target: float = 0.0,
     temperature_C: float = DEFAULT_TEMPERATURE_C,
     salt_M: float = DEFAULT_SALT_M,
-    max_candidates: int = 100_000,
-    workers: int | None = None,
+    heat: float = DEFAULT_BLOCKER_HEAT_C,
     matrix_directory: str | Path | None = None,
 ) -> list[dict[str, Any]]:
     """Screen linker designs, evaluate accepted domains, and return both."""
-    screened = screen_linker_toeholds(
-        nanostar_pairs,
+    screened = [screen_linker_toeholds(
+        nanostar_a_arms,
+        nanostar_b_arms,
         threshold=threshold,
         binding_target=binding_target,
         binding_tolerance=binding_tolerance,
         temperature_C=temperature_C,
         salt_M=salt_M,
-        max_candidates=max_candidates,
-        workers=workers,
-    )
+        heat=heat,
+    )]
 
     output_directory = Path(matrix_directory) if matrix_directory else None
     if output_directory is not None:
@@ -147,16 +151,12 @@ def screen_and_evaluate(
         combined.append(record)
 
         print(
-            "\nEffectiveness for "
-            f"bucket {result['bucket_number']} "
-            f"(NS{result['nanostar_A']}, NS{result['nanostar_B']}):"
+            "\nEffectiveness for nanostars A and B:"
         )
         print_effectiveness_report(evaluation)
 
         if output_directory is not None:
-            filename = (
-                f"NS{result['nanostar_A']}_NS{result['nanostar_B']}_matrix.png"
-            )
+            filename = "nanostar_A_B_matrix.png"
             plot_orthogonality_matrix(
                 evaluation["labels"],
                 evaluation["partition_function_matrix_kcal_per_mol"],
@@ -177,7 +177,7 @@ def save_pipeline_report(
     lines = [
         "NANOSTAR LINKER SCREENING AND EFFECTIVENESS REPORT",
         "=" * 52,
-        f"Buckets: {len(results)}",
+        f"Designs: {len(results)}",
         f"Completed: {sum(result['complete'] for result in results)}",
         "",
     ]
@@ -185,8 +185,7 @@ def save_pipeline_report(
     for result in results:
         lines.extend(
             [
-                f"BUCKET {result['bucket_number']}: "
-                f"NS{result['nanostar_A']} + NS{result['nanostar_B']}",
+                "NANOSTAR A + NANOSTAR B",
                 "-" * 52,
                 f"Complete: {result['complete']}",
             ]
@@ -262,13 +261,6 @@ def save_pipeline_report(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--pair",
-        nargs=2,
-        type=int,
-        metavar=("NS_A", "NS_B"),
-        help="Screen one pair; omit to screen all 120 pairs.",
-    )
     parser.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD_KCAL_PER_MOL)
     parser.add_argument(
         "--binding-target",
@@ -284,8 +276,12 @@ if __name__ == "__main__":
     parser.add_argument("--evaluation-off-target", type=float, default=0.0)
     parser.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE_C)
     parser.add_argument("--salt", type=float, default=DEFAULT_SALT_M)
-    parser.add_argument("--max-candidates", type=int, default=100_000)
-    parser.add_argument("--workers", type=int, default=None)
+    parser.add_argument(
+        "--heat",
+        type=float,
+        default=DEFAULT_BLOCKER_HEAT_C,
+        help="Temperature in deg C at which at least 50%% of each blocker must be dissociated.",
+    )
     parser.add_argument(
         "--matrix-directory",
         type=Path,
@@ -300,9 +296,17 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    selected_pairs = [tuple(args.pair)] if args.pair else None
+    nanostar_A_arms = (
+        "GCGTCCGACACTGAACTATG", "TGTCAGCCGTGCTATCAAGA",
+        "ACGGTCTGACCCGAAATAGT", "ATGTGGCCTACAGTGAATCC",
+    )
+    nanostar_B_arms = (
+        "TTGACCACCTAGGATGCGTT", "CGGAGACTAGATGATTTCCG",
+        "GATGTCTAACGATTCAGGCC", "CAAGTATCGGTGCTGATCCA",
+    )
     results = screen_and_evaluate(
-        selected_pairs,
+        nanostar_A_arms,
+        nanostar_B_arms,
         threshold=args.threshold,
         binding_target=args.binding_target,
         binding_tolerance=args.binding_tolerance,
@@ -310,8 +314,7 @@ if __name__ == "__main__":
         evaluation_off_target=args.evaluation_off_target,
         temperature_C=args.temperature,
         salt_M=args.salt,
-        max_candidates=args.max_candidates,
-        workers=args.workers,
+        heat=args.heat,
         matrix_directory=args.matrix_directory,
     )
     completed = sum(result["complete"] for result in results)

@@ -28,7 +28,7 @@ DEFAULT_TEMPERATURE_C = 20.0
 DEFAULT_SALT_M = 1.0
 
 
-def has_long_homopolymer(sequence, max_run=3):
+def has_long_homopolymer(sequence, max_run=2):
     """Return whether a repeated-base run exceeds ``max_run``."""
     run_length = 1
     for previous, current in zip(sequence, sequence[1:]):
@@ -203,18 +203,13 @@ def display_interaction_heatmap(
     return matrix
 
 
-def next_unstructured_sequence(
-    rng,
-    length,
-    seen,
-    monomer_mfes,
-    temperature_C,
-    salt_M,
-    max_attempts=10_000,
-):
+def next_unstructured_sequence(rng, length, seen, monomer_mfes, temperature_C, salt_M, max_attempts=int(1e5), three_letter=False):
     """Generate a strand whose monomer and reverse complement are unpaired."""
     for _ in range(max_attempts):
-        sequence = "".join(rng.choice("ATCG") for _ in range(length))
+        alphabet = "ATCG"
+        if three_letter:
+            alphabet = "ATC"
+        sequence = "".join(rng.choice(alphabet) for _ in range(length))
         if sequence in seen or has_long_homopolymer(sequence):
             continue
         seen.add(sequence)
@@ -305,12 +300,12 @@ def grow_orthogonal_buckets(
     buckets = [bucket]
     restart_count = 0
     failure_limit = length * 2
-    print_bucket(
-        bucket,
-        clique_size,
-        evaluated_count,
-        restart_count,
-    )
+    # print_bucket(
+    #     bucket,
+    #     clique_size,
+    #     evaluated_count,
+    #     restart_count,
+    # )
 
     if clique_size == 1:
         return buckets, 0, pair_energies, evaluated_count
@@ -399,12 +394,12 @@ def grow_orthogonal_buckets(
 
             if score >= threshold:
                 bucket.append(candidate)
-                print_bucket(
-                    bucket,
-                    clique_size,
-                    evaluated_count,
-                    restart_count,
-                )
+                # print_bucket(
+                #     bucket,
+                #     clique_size,
+                #     evaluated_count,
+                #     restart_count,
+                # )
                 if len(bucket) >= clique_size:
                     return buckets, 0, pair_energies, evaluated_count
             else:

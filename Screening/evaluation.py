@@ -1,7 +1,4 @@
-"""Evaluate and plot interactions among domains A-D and their complements."""
-
 from __future__ import annotations
-
 import argparse
 from itertools import combinations_with_replacement
 from pathlib import Path

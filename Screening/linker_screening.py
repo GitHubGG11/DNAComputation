@@ -1,36 +1,31 @@
-"""Screen orthogonal linker toeholds for all 16-choose-2 nanostar pairs."""
+"""Design orthogonal linkers for two selected nanostars."""
 
-from __future__ import annotations
 
-import argparse
-from contextlib import redirect_stdout
-import io
-from itertools import combinations
 from pathlib import Path
 import random
 import sys
-from typing import Any, Iterable
+from typing import Any, Sequence
 
 import ViennaRNA as RNA
 
 try:
     from .extract_ns_arms import DEFAULT_WORKBOOK, get_ns_arms
+    from .evaluation import thermal_binding_metrics
 except ImportError:
     from extract_ns_arms import DEFAULT_WORKBOOK, get_ns_arms
+    from evaluation import thermal_binding_metrics
 
 
 SURF_DIRECTORY = Path(__file__).resolve().parents[1] / "SURF2026_test"
 if str(SURF_DIRECTORY) not in sys.path:
     sys.path.insert(0, str(SURF_DIRECTORY))
 
-from orthogonal import (  # noqa: E402
-    DEFAULT_MAX_CANDIDATES,
+from orthogonal import (
     DEFAULT_SALT_M,
     DEFAULT_TEMPERATURE_C,
     DEFAULT_THRESHOLD_KCAL_PER_MOL,
     directional_binding_delta_g,
     fold,
-    grow_orthogonal_buckets,
     interaction_delta_g,
     next_unstructured_sequence,
     register_unstructured_sequence,
@@ -39,71 +34,57 @@ from orthogonal import (  # noqa: E402
 )
 
 
-NANOSTAR_COUNT = 16
 TOEHOLD_LENGTH = 8
 THIRD_DOMAIN_LENGTH = 6
 D_DOMAIN_LENGTH = 8
+BLOCKER_A_OVERLAP_LENGTH = 3
+DEFAULT_BLOCKER_HEAT_C = 35.0
+BLOCKER_HOLD_TEMPERATURE_C = 25.0
+BLOCKER_CONCENTRATION_M = 1e-6
 DEFAULT_TOEHOLD_BINDING_TARGET_KCAL_PER_MOL = -8.0
-DEFAULT_TOEHOLD_BINDING_TOLERANCE_KCAL_PER_MOL = 1.0
+DEFAULT_TOEHOLD_BINDING_TOLERANCE_KCAL_PER_MOL = 0.5
+TRIES_BEFORE_BACKTRACK = 1_000
 
 
 def _nanostar_strands_with_toehold(
-    nanostar_number: int,
-    toehold: str,
-    workbook: str | Path = DEFAULT_WORKBOOK,
+    arms: Sequence[str], toehold: str
 ) -> tuple[str, str, str, str]:
-    """Build the four complete strands for one numbered nanostar.
 
-    Arms are read in workbook order. Each strand contains the reverse
-    complement of the preceding arm, ``TT``, its own arm, ``T``, and the same
-    exposed A or B toehold. For strand 1, the preceding arm wraps around to arm
-    4. The returned tuple is ordered strand 1 through strand 4.
-    """
-    # Four consecutive workbook arms define one nanostar.
-    arms = get_ns_arms(workbook)
-    start = (nanostar_number - 1) * 4
-    group = arms[start : start + 4]
-    if len(group) != 4:
-        raise ValueError(f"Nanostar {nanostar_number} does not have four arms.")
-    # Cyclic construction: strand n starts with RC(arm n-1).
+    """Function that takes in the number of nanostars you need, extracts nanostar arm from Yancheng's
+    workbook, citation needed once publication is out (shhhhh). """
+
+    if len(arms) != 4:
+        raise ValueError("A nanostar must contain exactly four arms.")
+
     return tuple(
-        reverse_complement(group[index - 1])
+        reverse_complement(arms[index - 1])
         + "TT"
-        + group[index]
+        + arms[index]
         + "T"
         + toehold
         for index in range(4)
     )
 
+def md_env(temp, salt):
+    """Avoid repetition with ViennaRNA.md() calls."""
+    md = RNA.md()
+    md.temperature = float(temp)
+    md.salt = float(salt)
+    md.dangles = 2
+    return md
 
-def _screen_domain_d_and_blockers(
-    toehold_a: str,
-    toehold_b: str,
-    domain_c: str,
-    *,
-    threshold: float,
-    temperature_C: float,
-    salt_M: float,
-    max_candidates: int,
-) -> dict[str, Any] | None:
-    """Find domain D, two D-linkers, and two correctly registered blockers.
-
-    D is an unstructured 8-mer that must avoid self-binding and unintended
-    binding to A, B, or C. It is used to construct ``B*-D-B*`` and
-    ``A*-D-A*``; both complete strands must remain unstructured in isolation.
-
-    Two blockers are then designed against the two A*/D junctions of
-    ``A*-D-A*``. Each covers four D bases and three to five A* bases. A design
-    is returned only when the blockers are unstructured, mutually orthogonal,
-    and their MFE structures bind the full linker at the exact intended
-    registers (no shifted/slipped duplex). Returns ``None`` if the search is
-    exhausted.
+def _screen_domain_d_and_blockers(toehold_a: str, toehold_b: str, domain_c: str, *, threshold: float, temperature_C: float, salt_M: float, heat: float):
     """
-    # Cache monomer energies needed by orthogonal.py's interaction functions.
+        Part 1: Screen for a domain D that doesn't interact much with toeholds A, B, or C. 
+        Part 2: Make sure blockers doesn't fold up on itself when paired with other domains (might be unnecessary).
+    """
+
     rng = random.Random()
     seen: set[str] = set()
     monomer_mfes: dict[str, float] = {}
     reference_domains = (toehold_a, toehold_b, domain_c)
+
+    # TODO: make sure that this isn't checked twice
     for domain in reference_domains:
         if not register_unstructured_sequence(
             domain, monomer_mfes, temperature_C, salt_M
@@ -112,44 +93,30 @@ def _screen_domain_d_and_blockers(
 
     a_star = reverse_complement(toehold_a)
     b_star = reverse_complement(toehold_b)
-    md = RNA.md()
-    md.temperature = float(temperature_C)
-    md.salt = float(salt_M)
-    md.dangles = 2
 
-    # Search random unstructured D candidates until all downstream constructs
-    # pass; a failed linker or blocker sends the search to the next D.
-    for evaluated_count in range(1, max_candidates + 1):
+    md = md_env(temperature_C, salt_M)
+
+    evaluated_count = 0
+    while evaluated_count < TRIES_BEFORE_BACKTRACK:
+        evaluated_count += 1
+        # TODO: I don't like throwing errors
+
+        # finding strands first
         try:
-            domain_d = next_unstructured_sequence(
-                rng,
-                D_DOMAIN_LENGTH,
-                seen,
-                monomer_mfes,
-                temperature_C,
-                salt_M,
-            )
+            domain_d = next_unstructured_sequence(rng, D_DOMAIN_LENGTH, seen, monomer_mfes, temperature_C, salt_M, three_letter=True)
         except RuntimeError:
             return None
 
-        # D must avoid homodimers and every unintended orientation with A/B/C.
-        self_energy = self_interaction_delta_g(
-            domain_d, monomer_mfes, temperature_C, salt_M
-        )
+        self_energy = self_interaction_delta_g(domain_d, monomer_mfes, temperature_C, salt_M)
         cross_energies = {
-            name: interaction_delta_g(
-                domain_d,
-                domain,
-                monomer_mfes,
-                temperature_C,
-                salt_M,
-            )
+            name: interaction_delta_g(domain_d, domain, monomer_mfes, temperature_C, salt_M)
             for name, domain in zip(("D-A", "D-B", "D-C"), reference_domains)
         }
         if min(self_energy, *cross_energies.values()) < threshold:
             continue
 
-        # These are the two single-strand D-containing linker designs.
+        # Condition 1: check if the whole linker is unstructured
+
         linker_bdb = b_star + domain_d + b_star
         linker_ada = a_star + domain_d + a_star
         linker_structures = {
@@ -164,148 +131,175 @@ def _screen_domain_d_and_blockers(
         ):
             continue
 
-        # Try each allowed A* coverage length independently at both junctions.
-        for left_overlap in range(3, 6):
-            left_target = a_star[-left_overlap:] + domain_d[:4]
-            blocker_1 = reverse_complement(left_target)
-            if not register_unstructured_sequence(
-                blocker_1, monomer_mfes, temperature_C, salt_M
-            ):
-                continue
-            for right_overlap in range(3, 6):
-                right_target = domain_d[-4:] + a_star[:right_overlap]
-                blocker_2 = reverse_complement(right_target)
-                if not register_unstructured_sequence(
-                    blocker_2, monomer_mfes, temperature_C, salt_M
-                ):
-                    continue
+        # TODO: Ask Yancheng/Erik about this design choice for even-length domain. Makes sense to me though. 
+        if len(domain_d) % 2:
+            raise ValueError("Domain D must have an even length.")
+        half_d = len(domain_d) // 2
 
-                # Released blockers should not bind one another strongly.
-                blocker_pair_energy = interaction_delta_g(
-                    blocker_1,
-                    blocker_2,
-                    monomer_mfes,
-                    temperature_C,
-                    salt_M,
-                )
-                if blocker_pair_energy < threshold:
-                    continue
+        # Each blocker covers half of D and the three adjacent bases of A*.
+        # Those A* bases are complementary to the terminal three bases of the
+        # corresponding A domain, so the blockers displace A as well as
+        # occupying D instead of binding D alone.
+        left_target = a_star[-BLOCKER_A_OVERLAP_LENGTH:] + domain_d[:half_d]
+        right_target = domain_d[half_d:] + a_star[:BLOCKER_A_OVERLAP_LENGTH]
+        blocker_1 = reverse_complement(left_target)
+        blocker_2 = reverse_complement(right_target)
+        if not all(
+            register_unstructured_sequence(blocker, monomer_mfes, temperature_C, salt_M)
+            for blocker in (blocker_1, blocker_2)
+        ):
+            continue
 
-                # Fold each blocker against the entire A*-D-A* strand. The
-                # exact dot-bracket register must be the MFE, preventing a
-                # blocker from sliding to an alternative A*/D alignment.
-                blocker_checks = {}
-                for name, blocker, target_start in (
-                    ("blocker_1", blocker_1, len(a_star) - left_overlap),
-                    ("blocker_2", blocker_2, len(a_star) + len(domain_d) - 4),
-                ):
-                    target_length = len(blocker)
-                    intended = (
-                        "." * target_start
-                        + "(" * target_length
-                        + "." * (len(linker_ada) - target_start - target_length)
-                        + ")" * target_length
-                    )
-                    compound = RNA.fold_compound(f"{linker_ada}&{blocker}", md)
-                    blocker_mfe_structure, blocker_mfe = compound.mfe()
-                    intended_energy = float(compound.eval_structure(intended))
-                    blocker_checks[name] = {
-                        "mfe_structure": blocker_mfe_structure,
-                        "intended_structure": intended,
-                        "mfe_kcal_per_mol": float(blocker_mfe),
-                        "intended_energy_kcal_per_mol": intended_energy,
-                        "slippage_free": blocker_mfe_structure == intended,
-                    }
-                if not all(
-                    check["slippage_free"] for check in blocker_checks.values()
-                ):
-                    continue
+        blocker_pair_energy = interaction_delta_g(blocker_1, blocker_2, monomer_mfes, temperature_C, salt_M)
+        if blocker_pair_energy < threshold:
+            continue
 
-                blocker_target_energies = {
-                    "blocker_1-target": directional_binding_delta_g(
-                        blocker_1, left_target, temperature_C, salt_M
-                    ),
-                    "blocker_2-target": directional_binding_delta_g(
-                        blocker_2, right_target, temperature_C, salt_M
-                    ),
-                }
-                return {
-                    "domain_D": domain_d,
-                    "domain_D_rc": reverse_complement(domain_d),
-                    "linker_Bstar_D_Bstar": linker_bdb,
-                    "linker_Astar_D_Astar": linker_ada,
-                    "D_linker_structures": linker_structures,
-                    "blocker_1": blocker_1,
-                    "blocker_2": blocker_2,
-                    "blocker_1_Astar_overlap": left_overlap,
-                    "blocker_2_Astar_overlap": right_overlap,
-                    "blocker_pair_delta_g_kcal_per_mol": blocker_pair_energy,
-                    "blocker_target_binding_kcal_per_mol": blocker_target_energies,
-                    "blocker_slippage_checks": blocker_checks,
-                    "blockers_slippage_free": True,
-                    "domain_D_self_delta_g_kcal_per_mol": self_energy,
-                    "domain_D_cross_delta_g_kcal_per_mol": cross_energies,
-                    "domain_D_evaluated_candidates": evaluated_count,
-                }
+        # B is present in the same system.  Reject blockers that can bind it,
+        # rather than checking only blocker-blocker and blocker-linker binding.
+        blocker_b_energies = {
+            "blocker_1-B": interaction_delta_g(
+                blocker_1, toehold_b, monomer_mfes, temperature_C, salt_M
+            ),
+            "blocker_2-B": interaction_delta_g(
+                blocker_2, toehold_b, monomer_mfes, temperature_C, salt_M
+            ),
+        }
+        if min(blocker_b_energies.values()) < threshold:
+            continue
+
+        # Fold each blocker against the entire A*-D-A* strand and require it
+        # to bind exactly its assigned half of D.
+        blocker_checks = {}
+        for name, blocker, target_start in (
+            (
+                "blocker_1",
+                blocker_1,
+                len(a_star) - BLOCKER_A_OVERLAP_LENGTH,
+            ),
+            ("blocker_2", blocker_2, len(a_star) + half_d),
+        ):
+            target_length = len(blocker)
+            intended = "." * target_start + "(" * target_length + "." * (len(linker_ada) - target_start - target_length) + ")" * target_length
+            compound = RNA.fold_compound(f"{linker_ada}&{blocker}", md)
+            blocker_mfe_structure, blocker_mfe = compound.mfe()
+            intended_energy = float(compound.eval_structure(intended))
+            blocker_checks[name] = {
+                "mfe_structure": blocker_mfe_structure,
+                "intended_structure": intended,
+                "mfe_kcal_per_mol": float(blocker_mfe),
+                "intended_energy_kcal_per_mol": intended_energy,
+                "slippage_free": blocker_mfe_structure == intended,
+            }
+        if not all(check["slippage_free"] for check in blocker_checks.values()):
+            continue
+
+        blocker_target_energies = {
+            "blocker_1-target": directional_binding_delta_g(
+                blocker_1, left_target, temperature_C, salt_M
+            ),
+            "blocker_2-target": directional_binding_delta_g(
+                blocker_2, right_target, temperature_C, salt_M
+            ),
+        }
+
+        blocker_thermal_metrics = {}
+        thermal_pass = True
+        for name, blocker, target in (
+            ("blocker_1", blocker_1, left_target),
+            ("blocker_2", blocker_2, right_target),
+        ):
+            metrics = thermal_binding_metrics(
+                blocker,
+                target,
+                concentration_M=BLOCKER_CONCENTRATION_M,
+                target_temperature_C=heat,
+                fit_temperatures_C=(BLOCKER_HOLD_TEMPERATURE_C, heat),
+                salt_M=salt_M,
+            )
+            at_hold = next(
+                point for point in metrics["curve"]
+                if point["temperature_C"] == BLOCKER_HOLD_TEMPERATURE_C
+            )
+            at_heat = next(
+                point for point in metrics["curve"]
+                if point["temperature_C"] == heat
+            )
+            metrics["bound_fraction_at_25C"] = at_hold["bound_fraction"]
+            metrics["off_fraction_at_heat"] = at_heat["off_fraction"]
+            metrics["passes_thermal_screen"] = (
+                at_hold["bound_fraction"] >= 0.90
+                and at_heat["off_fraction"] >= 0.50
+            )
+            blocker_thermal_metrics[name] = metrics
+            thermal_pass = thermal_pass and metrics["passes_thermal_screen"]
+        if not thermal_pass:
+            continue
+
+        return {
+            "domain_D": domain_d,
+            "domain_D_rc": reverse_complement(domain_d),
+            "linker_Bstar_D_Bstar": linker_bdb,
+            "linker_Astar_D_Astar": linker_ada,
+            "D_linker_structures": linker_structures,
+            "blocker_1": blocker_1,
+            "blocker_2": blocker_2,
+            "blocker_1_Astar_overlap": BLOCKER_A_OVERLAP_LENGTH,
+            "blocker_2_Astar_overlap": BLOCKER_A_OVERLAP_LENGTH,
+            "blocker_pair_delta_g_kcal_per_mol": blocker_pair_energy,
+            "blocker_B_delta_g_kcal_per_mol": blocker_b_energies,
+            "blocker_target_binding_kcal_per_mol": blocker_target_energies,
+            "blocker_heat_C": heat,
+            "blocker_hold_temperature_C": BLOCKER_HOLD_TEMPERATURE_C,
+            "blocker_concentration_M": BLOCKER_CONCENTRATION_M,
+            "blocker_thermal_metrics": blocker_thermal_metrics,
+            "blockers_pass_thermal_screen": True,
+            "blocker_slippage_checks": blocker_checks,
+            "domain_D_self_delta_g_kcal_per_mol": self_energy,
+            "domain_D_cross_delta_g_kcal_per_mol": cross_energies,
+            "domain_D_evaluated_candidates": evaluated_count,
+        }
     return None
 
-
 def _screen_toehold_pair(
-    *,
-    threshold: float,
-    binding_target: float,
-    binding_tolerance: float,
-    temperature_C: float,
-    salt_M: float,
-    max_candidates: int,
-    workers: int | None,
-) -> tuple[list[str], dict[tuple[str, str], float], int, dict[str, float]]:
-    """Find length-8 A and B domains with the requested binding behavior.
-
-    ``grow_orthogonal_buckets`` supplies two domains for which A, B, A*, and
-    B* are unstructured and unintended interactions meet ``threshold``. This
-    wrapper additionally requires both intended A-A* and B-B* MFE binding
-    energies to lie within ``binding_tolerance`` of ``binding_target``.
-    Searches are restarted until a pair passes or the candidate budget is
-    exhausted. It returns sequences, cached interaction energies, the number
-    evaluated, and the two cognate binding energies.
+    *, threshold: float, binding_target: float, binding_tolerance: float, temperature_C: float, salt_M: float,
+    ) -> tuple[list[str], dict[tuple[str, str], float], int, dict[str, float]]:
     """
+        Find two orthogonal linker pairs and evaluate them. 
+    """
+    rng = random.Random()
+    seen: set[str] = set()
+    monomer_mfes: dict[str, float] = {}
     evaluated_total = 0
-    while evaluated_total < max_candidates:
-        remaining = max_candidates - evaluated_total
-        # orthogonal.py prints every intermediate bucket; keep the 120-bucket
-        # linker run readable and report only accepted linker designs below.
-        with redirect_stdout(io.StringIO()):
-            buckets, result_index, energies, evaluated = grow_orthogonal_buckets(
-                bucket_count=1,
-                clique_size=2,
-                length=TOEHOLD_LENGTH,
-                threshold=threshold,
-                temperature_C=temperature_C,
-                salt_M=salt_M,
-                max_candidates=remaining,
-                workers=workers,
-            )
-        evaluated_total += evaluated
-        sequences = buckets[result_index]
-        if len(sequences) < 2:
-            return sequences, energies, evaluated_total, {}
+    while evaluated_total < TRIES_BEFORE_BACKTRACK:
+        evaluated_total += 1
+        try:
+            sequences = [
+                next_unstructured_sequence(
+                    rng, TOEHOLD_LENGTH, seen, monomer_mfes,
+                    temperature_C, salt_M, three_letter=True,
+                )
+                for _ in range(2)
+            ]
+        except RuntimeError:
+            return [], {}, evaluated_total, {}
 
-        # Orthogonality deliberately excludes these intended cognate duplexes,
-        # so evaluate their strengths separately here.
+        self_energies = {
+            (sequence, sequence): self_interaction_delta_g(
+                sequence, monomer_mfes, temperature_C, salt_M
+            )
+            for sequence in sequences
+        }
+        pair_key = tuple(sorted(sequences))
+        pair_energy = interaction_delta_g(
+            sequences[0], sequences[1], monomer_mfes, temperature_C, salt_M
+        )
+        energies = {**self_energies, pair_key: pair_energy}
+        if min(*self_energies.values(), pair_energy) < threshold:
+            continue
+
         binding_energies = {
-            "A-A*": directional_binding_delta_g(
-                sequences[0],
-                reverse_complement(sequences[0]),
-                temperature_C,
-                salt_M,
-            ),
-            "B-B*": directional_binding_delta_g(
-                sequences[1],
-                reverse_complement(sequences[1]),
-                temperature_C,
-                salt_M,
-            ),
+            "A-A*": directional_binding_delta_g(sequences[0], reverse_complement(sequences[0]), temperature_C, salt_M),
+            "B-B*": directional_binding_delta_g(sequences[1], reverse_complement(sequences[1]), temperature_C, salt_M),
         }
         if all(
             abs(energy - binding_target) <= binding_tolerance
@@ -317,14 +311,8 @@ def _screen_toehold_pair(
 
 
 def _screen_third_domain(
-    toehold_a: str,
-    toehold_b: str,
-    *,
-    threshold: float,
-    temperature_C: float,
-    salt_M: float,
-    max_candidates: int,
-) -> dict[str, Any] | None:
+    toehold_a: str, toehold_b: str, *,
+    threshold: float, temperature_C: float, salt_M: float) -> dict[str, Any] | None:
     """Find the 6-mer C domain and construct the two-strand first linker.
 
     C and C* must be unstructured alone, resist homodimers, and avoid
@@ -337,13 +325,17 @@ def _screen_third_domain(
     rng = random.Random()
     seen: set[str] = set()
     monomer_mfes: dict[str, float] = {}
+
+    # TODO: Not sure if this check is 100% needed. 
     for toehold in (toehold_a, toehold_b):
         if not register_unstructured_sequence(
             toehold, monomer_mfes, temperature_C, salt_M
         ):
             return None
 
-    for evaluated_count in range(1, max_candidates + 1):
+    evaluated_count = 0
+    while evaluated_count < TRIES_BEFORE_BACKTRACK:
+        evaluated_count += 1
         try:
             domain_c = next_unstructured_sequence(
                 rng,
@@ -416,242 +408,132 @@ def _screen_third_domain(
     return None
 
 
-def make_nanostar_pair_buckets(
-    nanostar_count: int = NANOSTAR_COUNT,
-) -> list[tuple[int, int]]:
-    """Return every unordered, one-based pair of nanostar identifiers.
-
-    With the default database size this produces ``C(16, 2) = 120`` buckets,
-    beginning with ``(1, 2)`` and ending with ``(15, 16)``.
-    """
-    if nanostar_count < 2:
-        raise ValueError("nanostar_count must be at least two.")
-    return list(combinations(range(1, nanostar_count + 1), 2))
-
-
 def screen_linker_toeholds(
-    nanostar_pairs: Iterable[tuple[int, int]] | None = None,
+    nanostar_a_arms: Sequence[str],
+    nanostar_b_arms: Sequence[str],
     *,
-    workbook: str | Path = DEFAULT_WORKBOOK,
     threshold: float = DEFAULT_THRESHOLD_KCAL_PER_MOL,
     binding_target: float = DEFAULT_TOEHOLD_BINDING_TARGET_KCAL_PER_MOL,
     binding_tolerance: float = DEFAULT_TOEHOLD_BINDING_TOLERANCE_KCAL_PER_MOL,
     temperature_C: float = DEFAULT_TEMPERATURE_C,
     salt_M: float = DEFAULT_SALT_M,
-    max_candidates: int = DEFAULT_MAX_CANDIDATES,
-    workers: int | None = None,
-) -> list[dict[str, Any]]:
-    """Run the complete A/B/C/D linker design for each nanostar pair.
-
-    This delegates screening to ``orthogonal.py``. Consequently, A, B, RC(A),
-    and RC(B) must be unstructured; A and B must pass the homodimer criterion;
-    and all unintended A/B orientation interactions must have Delta G greater
-    than or equal to ``threshold``. Intended A-RC(A) and B-RC(B) binding is
-    excluded from the cross-binding screen.
-
-    After A/B selection, the function screens C and its two-strand linker, then
-    D, both D-linkers, and both blockers. Finally it reconstructs the complete
-    four strands of each selected nanostar with A assigned to the first and B
-    to the second. One detailed dictionary is returned per input pair.
-
-    ``complete`` means every structural, orthogonality, binding-window, and
-    slippage condition in this file passed. Temperature-dependent occupancy is
-    not screened here; it is calculated later by ``screening_pipeline.py``.
-    Each run uses fresh randomness.
-    """
-    # No explicit pair list means all 120 combinations.
-    pairs = list(
-        make_nanostar_pair_buckets()
-        if nanostar_pairs is None
-        else nanostar_pairs
-    )
+    heat: float = DEFAULT_BLOCKER_HEAT_C,
+) -> dict[str, Any]:
+    """Design one complete linker system from two four-arm nanostars."""
+    if len(nanostar_a_arms) != 4 or len(nanostar_b_arms) != 4:
+        raise ValueError("Each nanostar must contain exactly four arms.")
     if binding_tolerance < 0:
         raise ValueError("binding_tolerance must be nonnegative.")
-    results: list[dict[str, Any]] = []
-
-    # Process buckets sequentially and retain failed buckets for diagnostics.
-    for bucket_number, (nanostar_a, nanostar_b) in enumerate(pairs, start=1):
-        if nanostar_a == nanostar_b:
-            raise ValueError("A bucket must contain two different nanostars.")
-        # Stage 1: choose orthogonal 8-mer A/B toeholds near the energy target.
-        sequences, energies, evaluated_count, binding_energies = _screen_toehold_pair(
-            threshold=threshold,
-            binding_target=binding_target,
-            binding_tolerance=binding_tolerance,
-            temperature_C=temperature_C,
-            salt_M=salt_M,
-            max_candidates=max_candidates,
-            workers=workers,
+    if heat <= BLOCKER_HOLD_TEMPERATURE_C:
+        raise ValueError(
+            f"heat must be greater than {BLOCKER_HOLD_TEMPERATURE_C} deg C."
         )
-        complete = len(sequences) == 2 and bool(binding_energies)
-        toehold_a = sequences[0] if sequences else None
-        toehold_b = sequences[1] if complete else None
 
-        # Defensive confirmation that A, B, A*, and B* are all unstructured.
-        linker_structures: dict[str, str] = {}
-        secondary_structure_free = False
-        if complete:
-            linker_sequences = {
-                "A": toehold_a,
-                "RC(A)": reverse_complement(toehold_a),
-                "B": toehold_b,
-                "RC(B)": reverse_complement(toehold_b),
-            }
-            linker_structures = {
-                name: fold(sequence, temperature_C, salt_M)[0]
-                for name, sequence in linker_sequences.items()
-            }
-            secondary_structure_free = all(
-                structure == "." * TOEHOLD_LENGTH
-                for structure in linker_structures.values()
-            )
-            complete = complete and secondary_structure_free
-
-        # Stage 2: choose C and construct the unslipped A*-C & C*-B* linker.
-        third_domain_result = None
-        if complete:
-            third_domain_result = _screen_third_domain(
-                toehold_a,
-                toehold_b,
+    restart_count = 0
+    while True:
+        sequences, energies, evaluated_count, binding_energies = (
+            _screen_toehold_pair(
                 threshold=threshold,
+                binding_target=binding_target,
+                binding_tolerance=binding_tolerance,
                 temperature_C=temperature_C,
                 salt_M=salt_M,
-                max_candidates=max_candidates,
             )
-            complete = third_domain_result is not None
+        )
+        if len(sequences) != 2 or not binding_energies:
+            restart_count += 1
+            continue
 
-        # Start the result record even if a later stage fails.
+        toehold_a, toehold_b = sequences
+        third_domain_result = _screen_third_domain(
+            toehold_a,
+            toehold_b,
+            threshold=threshold,
+            temperature_C=temperature_C,
+            salt_M=salt_M,
+        )
+        if third_domain_result is None:
+            restart_count += 1
+            continue
+
+        fourth_domain_result = _screen_domain_d_and_blockers(
+            toehold_a,
+            toehold_b,
+            third_domain_result["domain_C"],
+            threshold=threshold,
+            temperature_C=temperature_C,
+            salt_M=salt_M,
+            heat=heat,
+        )
+        if fourth_domain_result is None:
+            restart_count += 1
+            continue
+
+        linker_sequences = {
+            "A": toehold_a,
+            "RC(A)": reverse_complement(toehold_a),
+            "B": toehold_b,
+            "RC(B)": reverse_complement(toehold_b),
+        }
+        linker_structures = {
+            name: fold(sequence, temperature_C, salt_M)[0]
+            for name, sequence in linker_sequences.items()
+        }
         result = {
-            "bucket_number": bucket_number,
-            "nanostar_A": nanostar_a,
-            "nanostar_B": nanostar_b,
+            "nanostar_A_arms": tuple(nanostar_a_arms),
+            "nanostar_B_arms": tuple(nanostar_b_arms),
             "toehold_A": toehold_a,
-            "toehold_A_rc": (
-                reverse_complement(toehold_a) if toehold_a else None
-            ),
+            "toehold_A_rc": reverse_complement(toehold_a),
             "toehold_B": toehold_b,
-            "toehold_B_rc": (
-                reverse_complement(toehold_b) if toehold_b else None
-            ),
-            "interaction_delta_g_kcal_per_mol": (
-                energies.get(tuple(sorted((toehold_a, toehold_b))))
-                if toehold_a and toehold_b
-                else None
-            ),
+            "toehold_B_rc": reverse_complement(toehold_b),
+            "interaction_delta_g_kcal_per_mol": energies[
+                tuple(sorted((toehold_a, toehold_b)))
+            ],
             "cognate_binding_delta_g_kcal_per_mol": binding_energies,
             "binding_target_kcal_per_mol": binding_target,
             "binding_tolerance_kcal_per_mol": binding_tolerance,
             "secondary_structures": linker_structures,
-            "secondary_structure_free": secondary_structure_free,
+            "secondary_structure_free": True,
             "evaluated_candidates": evaluated_count,
-            "complete": complete,
+            "restart_count": restart_count,
+            "complete": True,
+            **third_domain_result,
+            **fourth_domain_result,
+            "nanostar_A_strands": _nanostar_strands_with_toehold(
+                nanostar_a_arms, toehold_a
+            ),
+            "nanostar_B_strands": _nanostar_strands_with_toehold(
+                nanostar_b_arms, toehold_b
+            ),
         }
-        if third_domain_result is not None:
-            result.update(third_domain_result)
-        else:
-            result.update(
-                {
-                    "domain_C": None,
-                    "domain_C_rc": None,
-                    "linker_strand_1": None,
-                    "linker_strand_2": None,
-                    "full_linker": None,
-                    "linker_intended_is_mfe": False,
-                }
-            )
-
-        # Stage 3: choose D, build both D-linkers, and design the blockers.
-        fourth_domain_result = None
-        if complete:
-            fourth_domain_result = _screen_domain_d_and_blockers(
-                toehold_a,
-                toehold_b,
-                third_domain_result["domain_C"],
-                threshold=threshold,
-                temperature_C=temperature_C,
-                salt_M=salt_M,
-                max_candidates=max_candidates,
-            )
-            complete = fourth_domain_result is not None
-            result["complete"] = complete
-        if fourth_domain_result is not None:
-            result.update(fourth_domain_result)
-            result["nanostar_A_strands"] = _nanostar_strands_with_toehold(
-                nanostar_a, toehold_a, workbook
-            )
-            result["nanostar_B_strands"] = _nanostar_strands_with_toehold(
-                nanostar_b, toehold_b, workbook
-            )
-        else:
-            result.update(
-                {
-                    "domain_D": None,
-                    "linker_Bstar_D_Bstar": None,
-                    "linker_Astar_D_Astar": None,
-                    "blocker_1": None,
-                    "blocker_2": None,
-                    "nanostar_A_strands": None,
-                    "nanostar_B_strands": None,
-                }
-            )
-        # Print complete constructs for direct inspection and save the same
-        # values in the result consumed by evaluation.py/the pipeline.
-        results.append(result)
         print(
-            f"Linker bucket {bucket_number}/{len(pairs)}: "
-            f"NS pair (NS{nanostar_a}, NS{nanostar_b}), complete={complete}"
+            f"Nanostar linker completed after {restart_count} backtracks."
         )
-        if complete:
-            print(f"  Accepted bucket [A, B]: [{toehold_a}, {toehold_b}]")
-            print(
-                "  Domains: "
-                f"A={toehold_a}, A*={result['toehold_A_rc']}; "
-                f"B={toehold_b}, B*={result['toehold_B_rc']}; "
-                f"C={result['domain_C']}, C*={result['domain_C_rc']}; "
-                f"D={result['domain_D']}, D*={result['domain_D_rc']}"
-            )
-            print(
-                "  Cognate binding Delta G: "
-                f"A-A*={binding_energies['A-A*']:.3f}, "
-                f"B-B*={binding_energies['B-B*']:.3f} kcal/mol"
-            )
-            print(f"  Nanostar A strands: {result['nanostar_A_strands']}")
-            print(f"  Nanostar B strands: {result['nanostar_B_strands']}")
-            print(f"  Linker 1 (A*-C & C*-B*): {result['full_linker']}")
-            print(f"  Linker 2 (B*-D-B*): {result['linker_Bstar_D_Bstar']}")
-            print(f"  Linker 3 (A*-D-A*): {result['linker_Astar_D_Astar']}")
-            print(f"  Blockers: [{result['blocker_1']}, {result['blocker_2']}]")
-
-    return results
-
-
+        print(f"  A={toehold_a}, B={toehold_b}")
+        print(
+            f"  C={result['domain_C']}, D={result['domain_D']}, "
+            f"blockers=[{result['blocker_1']}, {result['blocker_2']}]"
+        )
+        return result
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD_KCAL_PER_MOL)
-    parser.add_argument(
-        "--binding-target",
-        type=float,
-        default=DEFAULT_TOEHOLD_BINDING_TARGET_KCAL_PER_MOL,
+    # Default arm sequences copied from NS1 and NS2 in the workbook.
+    nanostar_A_arms = (
+        "GCGTCCGACACTGAACTATG",
+        "TGTCAGCCGTGCTATCAAGA",
+        "ACGGTCTGACCCGAAATAGT",
+        "ATGTGGCCTACAGTGAATCC",
     )
-    parser.add_argument(
-        "--binding-tolerance",
-        type=float,
-        default=DEFAULT_TOEHOLD_BINDING_TOLERANCE_KCAL_PER_MOL,
+    nanostar_B_arms = (
+        "TTGACCACCTAGGATGCGTT",
+        "CGGAGACTAGATGATTTCCG",
+        "GATGTCTAACGATTCAGGCC",
+        "CAAGTATCGGTGCTGATCCA",
     )
-    parser.add_argument("--temperature", type=float, default=DEFAULT_TEMPERATURE_C)
-    parser.add_argument("--salt", type=float, default=DEFAULT_SALT_M)
-    parser.add_argument("--max-candidates", type=int, default=DEFAULT_MAX_CANDIDATES)
-    parser.add_argument("--workers", type=int, default=None)
-    args = parser.parse_args()
 
-    screened = screen_linker_toeholds(
-        threshold=args.threshold,
-        binding_target=args.binding_target,
-        binding_tolerance=args.binding_tolerance,
-        temperature_C=args.temperature,
-        salt_M=args.salt,
-        max_candidates=args.max_candidates,
-        workers=args.workers,
-    )
-    completed = sum(result["complete"] for result in screened)
-    print(f"Completed {completed}/{len(screened)} linker buckets.")
+    # To choose different nanostars from the XLSX instead:
+    # workbook_arms = get_ns_arms(DEFAULT_WORKBOOK)
+    # nanostar_A_arms = workbook_arms[0:4]
+    # nanostar_B_arms = workbook_arms[4:8]
+
+    result = screen_linker_toeholds(nanostar_A_arms, nanostar_B_arms)
+    print(f"Complete: {result['complete']}")
